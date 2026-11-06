@@ -1,3 +1,7 @@
+<img width="738" height="456" alt="image" src="https://github.com/user-attachments/assets/e37287ac-420d-41f4-9e5d-d2f89195b741" />
+
+<img width="742" height="456" alt="image" src="https://github.com/user-attachments/assets/39179a7e-1662-44a4-9be2-447040cdef48" />
+
 <img width="742" height="459" alt="image" src="https://github.com/user-attachments/assets/3332a371-8516-48b2-90a0-f8a5ef4d6caf" />
 # Zembo_Browser
 🇷🇺 Zembo Browser: лёгкий браузер для Windows на Flutter и WebView2 с блокировщиком рекламы, тёмной темой сайтов, менеджером паролей и собственным поиском Zembo Search.  🇬🇧 Zembo Browser: a lightweight Windows browser built with Flutter and WebView2, with an ad blocker, dark mode for sites, a password manager and its own Zembo Search.
