@@ -30,6 +30,7 @@ class SettingsPage extends StatefulWidget {
   final PasswordsController passwords;
   final DownloadsController downloads;
   final ValueChanged<String> onOpenUrl;
+  final VoidCallback? onOpenDevTools;
   const SettingsPage({
     super.key,
     required this.settings,
@@ -37,6 +38,7 @@ class SettingsPage extends StatefulWidget {
     required this.passwords,
     required this.downloads,
     required this.onOpenUrl,
+    this.onOpenDevTools,
   });
 
   /// Открыть нужный раздел ('passwords', 'languages') — например, из подсказки паролей.
@@ -302,8 +304,36 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ]);
       case _Tab.about:
-        return const _Section(title: 'О браузере', children: [
-          _Row(title: 'Zembo Browser', subtitle: 'Версия 1.0.0'),
+        return _Section(title: 'О браузере', children: [
+          const _Row(title: 'Zembo Browser', subtitle: 'Версия 1.0.1'),
+          const _Divider(),
+          _Row(
+            title: 'Разработчик',
+            subtitle: 'Мой профиль на GitHub: github.com/qmbys',
+            trailing: TextButton(
+              onPressed: () => widget.onOpenUrl('https://github.com/qmbys'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.orange,
+                minimumSize: const Size(0, 30),
+              ),
+              child: const Text('Открыть'),
+            ),
+          ),
+          if (widget.onOpenDevTools != null) ...[
+            const _Divider(),
+            _Row(
+              title: 'Инструменты разработчика',
+              subtitle: 'Консоль последней открытой страницы сайта (для поиска ошибок)',
+              trailing: TextButton(
+                onPressed: widget.onOpenDevTools,
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.orange,
+                  minimumSize: const Size(0, 30),
+                ),
+                child: const Text('Открыть'),
+              ),
+            ),
+          ],
         ]);
     }
   }
@@ -462,6 +492,17 @@ class _SettingsPageState extends State<SettingsPage> {
         trailing: _Toggle(
           value: s.searchShell,
           onChanged: (v) => s.searchShell = v,
+        ),
+      ),
+      const _Divider(),
+      _Row(
+        title: 'Источник результатов',
+        subtitle:
+            'Если Brave Search не отвечает, поиск переключается на DuckDuckGo',
+        trailing: _Dropdown<String>(
+          value: s.searchSource,
+          items: AppSettings.searchSources,
+          onChanged: (v) => s.searchSource = v,
         ),
       ),
       const _Divider(),

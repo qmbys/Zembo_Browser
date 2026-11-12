@@ -229,7 +229,7 @@ class _BrowserTopBarState extends State<BrowserTopBar> {
               style: const TextStyle(fontSize: 13, color: AppColors.foreground),
               decoration: InputDecoration(
                 hintText: tr('Введите поисковый запрос или адрес сайта'),
-                hintStyle: TextStyle(fontSize: 13, color: AppColors.muted),
+                hintStyle: const TextStyle(fontSize: 13, color: AppColors.muted),
                 border: InputBorder.none,
                 isCollapsed: true,
               ),

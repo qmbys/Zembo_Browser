@@ -12,12 +12,14 @@ import 'ad_blocklist.dart';
 import 'app_settings.dart';
 import 'brave_scraper.dart';
 import 'brave_search.dart';
+import 'ddg_search.dart';
 import 'builtin_scripts.dart';
 import 'downloads_controller.dart';
 import 'history_controller.dart';
 import 'keyboard_shortcuts.dart';
 import 'mail_controller.dart';
 import 'mail_script.dart';
+import 'page_edits.dart';
 import 'password_script.dart';
 import 'passwords_controller.dart';
 import 'safe_browsing.dart';
@@ -167,6 +169,19 @@ class TabsController extends ChangeNotifier {
 
   /// Менеджер паролей, подсказка логинов и предложение сохранить пароль.
   PasswordsController? passwords;
+
+  /// Правки страниц, сохранённые навсегда (редактор кода по F12).
+  PageEdits? edits;
+
+  /// F12 на странице: открыть/закрыть редактор кода.
+  VoidCallback? onF12;
+
+  /// Переустановить скрипты во всех открытых вкладках (после смены правок).
+  Future<void> reapplyAllScripts() async {
+    for (final t in List.of(_tabs)) {
+      await _applyScripts(t);
+    }
+  }
   PasswordPrompt? pwPrompt;
   PasswordSavePrompt? pwSave;
   Timer? _pwSaveTimer;
@@ -366,8 +381,16 @@ class TabsController extends ChangeNotifier {
   bool get _useSearchShell =>
       settings.searchEngine == AppSettings.zemboSearch && settings.searchShell;
 
-  /// С ключом — Brave Search API; без ключа (или если API не ответил) — скрытая страница.
+  /// Источник обычной выдачи: Brave (ключ API или скрытая страница). Если Brave не
+  /// ответил, берём DuckDuckGo и переключаемся на него насовсем.
   Future<List<SearchResult>> _search(String kind, String q, int page) async {
+    if (kind == 'web' && settings.searchSource == 'duckduckgo') {
+      try {
+        return await DdgSearch.web(q, page: page);
+      } on BraveError {
+        // DuckDuckGo не ответил — на этот раз пробуем Brave.
+      }
+    }
     if (settings.braveApiKey.trim().isNotEmpty) {
       try {
         switch (kind) {
@@ -384,7 +407,21 @@ class TabsController extends ChangeNotifier {
         // Ключ не подошёл или закончился лимит — пробуем без ключа.
       }
     }
-    return scraper.fetch(kind, q, page: page);
+    try {
+      return await scraper.fetch(kind, q, page: page);
+    } on BraveError {
+      if (kind != 'web' || settings.searchSource == 'duckduckgo') rethrow;
+      // Переключаемся, только если запасной источник реально ответил.
+      final r = await DdgSearch.web(q, page: page);
+      settings.searchSource = 'duckduckgo';
+      _sourceSwitched();
+      return r;
+    }
+  }
+
+  void _sourceSwitched() {
+    // Источник виден в настройках и внизу страницы результатов.
+    notifyListeners();
   }
 
   void _openUrl(BrowserTab tab, String url) {
@@ -690,6 +727,19 @@ class TabsController extends ChangeNotifier {
   }
 
   // ---------- контекстное меню страницы ----------
+
+  /// Открывает инструменты разработчика (консоль) для последней открытой страницы сайта.
+  Future<void> openDevTools() async {
+    for (final t in _tabs.reversed) {
+      if (t.isBrowsing && t.web != null && t.webReady) {
+        try {
+          await t.web!.openDevTools();
+        } catch (_) {}
+        return;
+      }
+    }
+    showToast('Откройте сайт, чтобы открыть инструменты разработчика');
+  }
 
   /// Показать контекстное меню в Flutter-странице (результаты поиска и т.п.).
   void showContext(PageContext c) {
@@ -1041,6 +1091,11 @@ class TabsController extends ChangeNotifier {
       await add(BuiltinScripts.zemboSearchSkin);
       await add(ScrollScript.support(settings.smoothScroll, settings.scrollSpeed));
       if (settings.doNotTrack) await add(PrivacyScript.signals);
+      // Свои правки сайтов и F12 для редактора кода.
+      for (final script in edits?.scripts() ?? const <String>[]) {
+        await add(script);
+      }
+      await add(PageEdits.f12Script);
     } catch (_) {}
   }
 
@@ -1140,6 +1195,9 @@ class TabsController extends ChangeNotifier {
             tab.hasVideo = has;
             notifyListeners();
           }
+        case 'zembo-f12':
+          if (tab.id != _activeId) return;
+          onF12?.call();
         case 'zembo-key':
           if (tab.id != _activeId) return;
           final code = m['code'];

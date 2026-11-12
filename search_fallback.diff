@@ -1,0 +1,159 @@
+--- a/lib/state/app_settings.dart
++++ b/lib/state/app_settings.dart
+@@ -77,6 +77,11 @@
+   double _searchZoom = 1.0;
+   final Map<String, double> _siteZoom = {};
+   bool _searchShell = true;
++
++  /// Откуда берутся обычные результаты Zembo Search: 'brave' или 'duckduckgo'.
++  /// После первого сбоя Brave браузер насовсем переключается на DuckDuckGo
++  /// (вернуть Brave можно в настройках). Список источников — только проверенные.
++  String _searchSource = 'brave';
+   List<String> _toolbarOrder = List.of(toolbarDefaults);
+   Set<String> _toolbarHidden = {};
+   bool _showCopy = true;
+@@ -137,6 +142,15 @@
+   bool get searchShell => _searchShell;
+   set searchShell(bool v) => _update(() => _searchShell = v);
+ 
++  static const searchSources = {
++    'brave': 'Brave Search',
++    'duckduckgo': 'DuckDuckGo',
++  };
++  String get searchSource => _searchSource;
++  set searchSource(String v) {
++    if (searchSources.containsKey(v)) _update(() => _searchSource = v);
++  }
++
+   String get braveApiKey => _braveApiKey;
+   set braveApiKey(String v) => _update(() => _braveApiKey = v.trim());
+ 
+@@ -384,6 +398,8 @@
+           }
+         }
+         s._searchShell = map['searchShell'] as bool? ?? s._searchShell;
++        final src = map['searchSource'];
++        if (src is String && searchSources.containsKey(src)) s._searchSource = src;
+         s._showCopy = map['showCopy'] as bool? ?? s._showCopy;
+         s._showStar = map['showStar'] as bool? ?? s._showStar;
+         final order = map['toolbarOrder'];
+@@ -446,6 +462,7 @@
+         'searchZoom': _searchZoom,
+         'siteZoom': _siteZoom,
+         'searchShell': _searchShell,
++        'searchSource': _searchSource,
+         'showCopy': _showCopy,
+         'showStar': _showStar,
+         'toolbarOrder': _toolbarOrder,
+--- a/lib/state/tabs_controller.dart
++++ b/lib/state/tabs_controller.dart
+@@ -12,6 +12,7 @@
+ import 'app_settings.dart';
+ import 'brave_scraper.dart';
+ import 'brave_search.dart';
++import 'ddg_search.dart';
+ import 'builtin_scripts.dart';
+ import 'downloads_controller.dart';
+ import 'history_controller.dart';
+@@ -380,8 +381,16 @@
+   bool get _useSearchShell =>
+       settings.searchEngine == AppSettings.zemboSearch && settings.searchShell;
+ 
+-  /// С ключом — Brave Search API; без ключа (или если API не ответил) — скрытая страница.
++  /// Источник обычной выдачи: Brave (ключ API или скрытая страница). Если Brave не
++  /// ответил, берём DuckDuckGo и переключаемся на него насовсем.
+   Future<List<SearchResult>> _search(String kind, String q, int page) async {
++    if (kind == 'web' && settings.searchSource == 'duckduckgo') {
++      try {
++        return await DdgSearch.web(q, page: page);
++      } on BraveError {
++        // DuckDuckGo не ответил — на этот раз пробуем Brave.
++      }
++    }
+     if (settings.braveApiKey.trim().isNotEmpty) {
+       try {
+         switch (kind) {
+@@ -398,7 +407,21 @@
+         // Ключ не подошёл или закончился лимит — пробуем без ключа.
+       }
+     }
+-    return scraper.fetch(kind, q, page: page);
++    try {
++      return await scraper.fetch(kind, q, page: page);
++    } on BraveError {
++      if (kind != 'web' || settings.searchSource == 'duckduckgo') rethrow;
++      // Переключаемся, только если запасной источник реально ответил.
++      final r = await DdgSearch.web(q, page: page);
++      settings.searchSource = 'duckduckgo';
++      _sourceSwitched();
++      return r;
++    }
++  }
++
++  void _sourceSwitched() {
++    // Источник виден в настройках и внизу страницы результатов.
++    notifyListeners();
+   }
+ 
+   void _openUrl(BrowserTab tab, String url) {
+--- a/lib/pages/settings_page.dart
++++ b/lib/pages/settings_page.dart
+@@ -495,6 +495,17 @@
+         ),
+       ),
+       const _Divider(),
++      _Row(
++        title: 'Источник результатов',
++        subtitle:
++            'Если Brave Search не отвечает, поиск переключается на DuckDuckGo',
++        trailing: _Dropdown<String>(
++          value: s.searchSource,
++          items: AppSettings.searchSources,
++          onChanged: (v) => s.searchSource = v,
++        ),
++      ),
++      const _Divider(),
+       Padding(
+         padding: const EdgeInsets.fromLTRB(18, 14, 18, 16),
+         child: Column(
+--- a/lib/widgets/search_results_page.dart
++++ b/lib/widgets/search_results_page.dart
+@@ -235,10 +235,13 @@
+               if (items.isNotEmpty)
+                 ConstrainedBox(
+                   constraints: const BoxConstraints(maxWidth: 780),
+-                  child: const Padding(
+-                    padding: EdgeInsets.only(top: 22),
++                  child: Padding(
++                    padding: const EdgeInsets.only(top: 22),
+                     child: Center(
+-                      child: Text('Результаты: Brave Search',
++                      child: Text(
++                          tabs.settings.searchSource == 'duckduckgo'
++                              ? 'Результаты: DuckDuckGo'
++                              : 'Результаты: Brave Search',
+                           style: TextStyle(
+                               fontSize: 11.5, color: Color(0xFF5B646D))),
+                     ),
+--- a/lib/i18n/strings_en.dart
++++ b/lib/i18n/strings_en.dart
+@@ -382,4 +382,8 @@
+   'Сохранено навсегда для этого сайта': 'Saved forever for this site',
+   'Применено на этой странице': 'Applied to this page',
+   'Правки сайта сброшены, страница перезагружена': 'Site edits were reset, the page was reloaded',
++  'Источник результатов': "Results source",
++  'Если Brave Search не отвечает, поиск переключается на DuckDuckGo': "If Brave Search doesn’t respond, search switches to DuckDuckGo",
++  'Результаты: DuckDuckGo': "Results: DuckDuckGo",
++  'Brave Search не ответил — результаты теперь берутся из DuckDuckGo. Вернуть Brave можно в настройках.': "Brave Search didn’t respond — results now come from DuckDuckGo. You can switch back in settings.",
+ };
+--- a/lib/i18n/strings_uk.dart
++++ b/lib/i18n/strings_uk.dart
+@@ -358,4 +358,8 @@
+   'Сохранено навсегда для этого сайта': 'Збережено назавжди для цього сайту',
+   'Применено на этой странице': 'Застосовано на цій сторінці',
+   'Правки сайта сброшены, страница перезагружена': 'Правки сайту скинуто, сторінку перезавантажено',
++  'Источник результатов': "Джерело результатів",
++  'Если Brave Search не отвечает, поиск переключается на DuckDuckGo': "Якщо Brave Search не відповідає, пошук перемикається на DuckDuckGo",
++  'Результаты: DuckDuckGo': "Результати: DuckDuckGo",
++  'Brave Search не ответил — результаты теперь берутся из DuckDuckGo. Вернуть Brave можно в настройках.': "Brave Search не відповів — результати тепер беруться з DuckDuckGo. Повернути Brave можна в налаштуваннях.",
+ };

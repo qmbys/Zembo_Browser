@@ -2,7 +2,10 @@
 ; Собирается скриптом build_installer.ps1 — он сам подготовит папку stage.
 
 #define AppName "Zembo Browser"
-#define AppVersion "1.0.0"
+; Версию подставляет build_installer.ps1 из pubspec.yaml (/DAppVersion=...).
+#ifndef AppVersion
+  #define AppVersion "1.0.1"
+#endif
 #define AppExe "zembo_browser.exe"
 #define AppPublisher "Zembo"
 #define StageDir "stage"
@@ -11,6 +14,7 @@
 AppId={{B7C1D1E4-5A1F-4C27-9E3B-6A0F1D7E2C41}
 AppName={#AppName}
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\Zembo Browser
 DefaultGroupName={#AppName}
@@ -41,6 +45,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 russian.DeleteData=Удалить также настройки, историю и сохранённые пароли Zembo Browser?
 ukrainian.DeleteData=Видалити також налаштування, історію та збережені паролі Zembo Browser?
 english.DeleteData=Also delete Zembo Browser settings, history and saved passwords?
+russian.UpdateInfo=Обнаружена установленная версия %1. Zembo Browser будет обновлён до версии %2. Настройки, история, пароли и правки страниц сохранятся.
+ukrainian.UpdateInfo=Виявлено встановлену версію %1. Zembo Browser буде оновлено до версії %2. Налаштування, історія, паролі та правки сторінок збережуться.
+english.UpdateInfo=Version %1 is already installed. Zembo Browser will be updated to version %2. Your settings, history, passwords and page edits will be kept.
+russian.NewerInstalled=Уже установлена более новая версия (%1), чем эта (%2). Установка прервана. Чтобы поставить старую версию, сначала удалите новую.
+ukrainian.NewerInstalled=Уже встановлена новіша версія (%1), ніж ця (%2). Встановлення перервано. Щоб поставити стару версію, спершу видаліть нову.
+english.NewerInstalled=A newer version (%1) than this one (%2) is already installed. Setup was stopped. To install the older version, uninstall the newer one first.
 russian.InstallingWebView2=Устанавливаю компонент Microsoft WebView2...
 ukrainian.InstallingWebView2=Встановлюю компонент Microsoft WebView2...
 english.InstallingWebView2=Installing the Microsoft WebView2 component...
@@ -56,6 +66,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; При обновлении убираем старые файлы самой программы (папка data внутри каталога установки).
+; Данные пользователя лежат отдельно, в %APPDATA%\ZemboBrowser, и не затрагиваются.
+Type: filesandordirs; Name: "{app}\data"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
@@ -105,13 +120,85 @@ begin
       Result := (v <> '') and (v <> '0.0.0.0');
 end;
 
+const
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B7C1D1E4-5A1F-4C27-9E3B-6A0F1D7E2C41}_is1';
+
+// Версия Zembo Browser, уже установленная на компьютере (пустая строка — не установлен).
+function InstalledVersion: String;
+var
+  v: String;
+begin
+  Result := '';
+  if RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', v) then
+    Result := v
+  else if RegQueryStringValue(HKLM64, UninstallKey, 'DisplayVersion', v) then
+    Result := v
+  else if RegQueryStringValue(HKLM32, UninstallKey, 'DisplayVersion', v) then
+    Result := v;
+end;
+
+function VerPart(var s: String): Integer;
+var
+  p: Integer;
+begin
+  p := Pos('.', s);
+  if p = 0 then
+  begin
+    Result := StrToIntDef(s, 0);
+    s := '';
+  end
+  else
+  begin
+    Result := StrToIntDef(Copy(s, 1, p - 1), 0);
+    s := Copy(s, p + 1, Length(s));
+  end;
+end;
+
+// -1: a старее b, 0: одинаковые, 1: a новее b.
+function CompareVer(a, b: String): Integer;
+var
+  i, x, y: Integer;
+begin
+  Result := 0;
+  for i := 1 to 4 do
+  begin
+    x := VerPart(a);
+    y := VerPart(b);
+    if x < y then begin Result := -1; Exit; end;
+    if x > y then begin Result := 1; Exit; end;
+  end;
+end;
+
+// На странице «Всё готово» сообщаем, что это обновление и данные сохранятся.
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+var
+  old: String;
+begin
+  Result := '';
+  old := InstalledVersion;
+  if old <> '' then
+    Result := FmtMessage(CustomMessage('UpdateInfo'), [old, '{#AppVersion}']) + NewLine + NewLine;
+  if MemoDirInfo <> '' then
+    Result := Result + MemoDirInfo + NewLine + NewLine;
+  if MemoTasksInfo <> '' then
+    Result := Result + MemoTasksInfo;
+end;
+
 // Браузеру нужен Microsoft WebView2 (в Windows 11 он уже есть). Если его нет — скачиваем.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   setupPath: String;
   code: Integer;
+  old: String;
 begin
   Result := '';
+  // Старую версию поверх новой не ставим, чтобы не испортить данные нового формата.
+  old := InstalledVersion;
+  if (old <> '') and (CompareVer(old, '{#AppVersion}') > 0) then
+  begin
+    Result := FmtMessage(CustomMessage('NewerInstalled'), [old, '{#AppVersion}']);
+    Exit;
+  end;
   if WebView2Installed then Exit;
   WizardForm.StatusLabel.Caption := CustomMessage('InstallingWebView2');
   try

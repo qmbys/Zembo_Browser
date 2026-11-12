@@ -1,7 +1,7 @@
 name: zembo_browser
 description: Zembo Browser UI concept
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -13,6 +13,7 @@ dependencies:
   webview_windows: ^0.4.0
   enough_mail: ^2.1.6
   crypto: ^3.0.3
+  desktop_drop: ^0.4.4
 
 dev_dependencies:
   flutter_test:

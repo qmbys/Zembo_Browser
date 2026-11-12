@@ -60,7 +60,7 @@ class _SearchFieldState extends State<SearchField> {
               cursorColor: AppColors.orange,
               decoration: InputDecoration(
                 hintText: tr('Поиск в интернете или введите адрес'),
-                hintStyle: TextStyle(color: AppColors.muted, fontSize: 15),
+                hintStyle: const TextStyle(color: AppColors.muted, fontSize: 15),
                 border: InputBorder.none,
                 isCollapsed: true,
               ),

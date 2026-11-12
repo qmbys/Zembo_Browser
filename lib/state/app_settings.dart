@@ -77,6 +77,11 @@ class AppSettings extends ChangeNotifier {
   double _searchZoom = 1.0;
   final Map<String, double> _siteZoom = {};
   bool _searchShell = true;
+
+  /// Откуда берутся обычные результаты Zembo Search: 'brave' или 'duckduckgo'.
+  /// После первого сбоя Brave браузер насовсем переключается на DuckDuckGo
+  /// (вернуть Brave можно в настройках). Список источников — только проверенные.
+  String _searchSource = 'brave';
   List<String> _toolbarOrder = List.of(toolbarDefaults);
   Set<String> _toolbarHidden = {};
   bool _showCopy = true;
@@ -136,6 +141,15 @@ class AppSettings extends ChangeNotifier {
   /// Показывать результаты Zembo Search в оформлении браузера.
   bool get searchShell => _searchShell;
   set searchShell(bool v) => _update(() => _searchShell = v);
+
+  static const searchSources = {
+    'brave': 'Brave Search',
+    'duckduckgo': 'DuckDuckGo',
+  };
+  String get searchSource => _searchSource;
+  set searchSource(String v) {
+    if (searchSources.containsKey(v)) _update(() => _searchSource = v);
+  }
 
   String get braveApiKey => _braveApiKey;
   set braveApiKey(String v) => _update(() => _braveApiKey = v.trim());
@@ -384,6 +398,8 @@ class AppSettings extends ChangeNotifier {
           }
         }
         s._searchShell = map['searchShell'] as bool? ?? s._searchShell;
+        final src = map['searchSource'];
+        if (src is String && searchSources.containsKey(src)) s._searchSource = src;
         s._showCopy = map['showCopy'] as bool? ?? s._showCopy;
         s._showStar = map['showStar'] as bool? ?? s._showStar;
         final order = map['toolbarOrder'];
@@ -446,6 +462,7 @@ class AppSettings extends ChangeNotifier {
         'searchZoom': _searchZoom,
         'siteZoom': _siteZoom,
         'searchShell': _searchShell,
+        'searchSource': _searchSource,
         'showCopy': _showCopy,
         'showStar': _showStar,
         'toolbarOrder': _toolbarOrder,

@@ -15,7 +15,7 @@ class ScrollScript {
   static const _template = r'''
 (function () {
   if (window.__zscroll) return;
-  var S = window.__zscroll = { cfg: __CFG__ };
+  var S = window.__zscroll = { cfg: __CFG__, lx: -1, ly: -1 };
   var raf = 0, st = null;
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -27,16 +27,24 @@ class ScrollScript {
     return d > 0 ? el.scrollLeft + el.clientWidth < el.scrollWidth - 1 : el.scrollLeft > 0;
   }
 
+  // Контейнеры со scroll-snap или своей плавной прокруткой прокручивает сам браузер:
+  // программная прокрутка с ними «борется» и ломает страницу.
+  function own(el, cs) {
+    if (cs.scrollSnapType && cs.scrollSnapType !== 'none') return null;
+    if (cs.scrollBehavior === 'smooth') return null;
+    return el;
+  }
+
   // Ищем элемент под курсором, который реально можно прокрутить.
   function pick(el, dx, dy) {
     var root = document.scrollingElement || document.documentElement;
     while (el && el.nodeType === 1) {
       if (el === document.body || el === document.documentElement) break;
       var cs = getComputedStyle(el);
-      if (dy !== 0 && /(auto|scroll)/.test(cs.overflowY) &&
-          el.scrollHeight > el.clientHeight + 1 && canScroll(el, true, dy)) return el;
-      if (dx !== 0 && /(auto|scroll)/.test(cs.overflowX) &&
-          el.scrollWidth > el.clientWidth + 1 && canScroll(el, false, dx)) return el;
+      if (dy !== 0 && /(auto|scroll|overlay)/.test(cs.overflowY) &&
+          el.scrollHeight > el.clientHeight + 1 && canScroll(el, true, dy)) return own(el, cs);
+      if (dx !== 0 && /(auto|scroll|overlay)/.test(cs.overflowX) &&
+          el.scrollWidth > el.clientWidth + 1 && canScroll(el, false, dx)) return own(el, cs);
       el = el.parentElement;
     }
     if (dy !== 0 && root.scrollHeight > root.clientHeight + 1 && canScroll(root, true, dy)) return root;
@@ -64,11 +72,40 @@ class ScrollScript {
     else st = null;
   }
 
+  function assist(e) {
+    var unit = e.deltaMode === 1 ? 40 : (e.deltaMode === 2 ? window.innerHeight : 1);
+    var dx = e.deltaX * unit, dy = e.deltaY * unit;
+    if (e.shiftKey && dx === 0) { dx = dy; dy = 0; }
+    if (!dx && !dy) return;
+    var el = pick(e.target, dx, dy);
+    if (!el) return;
+    var y0 = el.scrollTop, x0 = el.scrollLeft;
+    setTimeout(function () {
+      if (e.defaultPrevented) return;
+      if (el.scrollTop !== y0 || el.scrollLeft !== x0) return; // браузер справился сам
+      if (dy) el.scrollTop += dy;
+      if (dx) el.scrollLeft += dx;
+    }, 90);
+  }
+
+  // Встроенный движок присылает колесо с координатами (0, 0), а не там, где курсор.
+  // Поэтому запоминаем, где курсор на самом деле, и ищем элемент под ним сами.
+  function track(e) {
+    if (e.clientX || e.clientY) { S.lx = e.clientX; S.ly = e.clientY; }
+  }
+  ['mousemove', 'pointermove', 'mousedown', 'pointerdown'].forEach(function (t) {
+    window.addEventListener(t, track, { capture: true, passive: true });
+  });
+
   window.addEventListener('wheel', function (e) {
     if (e.ctrlKey || e.metaKey) return;
     var c = S.cfg;
-    // Стандартные настройки — браузер прокручивает сам.
-    if (c.smooth && Math.abs(c.sens - 1) < 0.01) return;
+    // Стандартные настройки — браузер прокручивает сам, но мы проверяем, что
+    // колесо действительно что-то сдвинуло (на некоторых сайтах, например ChatGPT,
+    // встроенная прокрутка не срабатывает), и при необходимости докручиваем.
+    var lost = e.clientX === 0 && e.clientY === 0 && S.lx >= 0;
+    var target = lost ? (document.elementFromPoint(S.lx, S.ly) || e.target) : e.target;
+    if (!lost && c.smooth && Math.abs(c.sens - 1) < 0.01) { assist(e); return; }
 
     var unit = e.deltaMode === 1 ? 40 : (e.deltaMode === 2 ? window.innerHeight : 1);
     var dx = e.deltaX * unit * c.sens;
@@ -76,7 +113,7 @@ class ScrollScript {
     if (e.shiftKey && dx === 0) { dx = dy; dy = 0; }
     if (!dx && !dy) return;
 
-    var el = pick(e.target, dx, dy);
+    var el = pick(target, dx, dy);
     if (!el) return;
     e.preventDefault();
 

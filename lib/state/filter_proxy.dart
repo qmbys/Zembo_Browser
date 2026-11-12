@@ -169,6 +169,17 @@ class FilterProxy extends ChangeNotifier {
     sub.cancel();
   }
 
+  /// Закрываем соединение только после того, как всё уже полученное записано:
+  /// прямой destroy() обрывал передачу и отрезал хвост ответа (скрипты и данные
+  /// тяжёлых сайтов приходили не целиком).
+  void _closeAfterFlush(Socket s) {
+    try {
+      s.flush().catchError((_) {}).whenComplete(s.destroy);
+    } catch (_) {
+      s.destroy();
+    }
+  }
+
   void _pipe(Socket client, StreamSubscription<Uint8List> sub, Socket remote,
       Uint8List initial) {
     remote.setOption(SocketOption.tcpNoDelay, true);
@@ -183,7 +194,7 @@ class FilterProxy extends ChangeNotifier {
       client.destroy();
       remote.destroy();
     });
-    sub.onDone(remote.destroy);
+    sub.onDone(() => _closeAfterFlush(remote));
 
     remote.listen(
       (d) {
@@ -191,7 +202,7 @@ class FilterProxy extends ChangeNotifier {
           client.add(d);
         } catch (_) {}
       },
-      onDone: client.destroy,
+      onDone: () => _closeAfterFlush(client),
       onError: (_) {
         client.destroy();
         remote.destroy();

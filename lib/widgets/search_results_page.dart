@@ -235,10 +235,13 @@ class _SearchResultsPageState extends State<SearchResultsPage> {
               if (items.isNotEmpty)
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 780),
-                  child: const Padding(
-                    padding: EdgeInsets.only(top: 22),
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 22),
                     child: Center(
-                      child: Text('Результаты: Brave Search',
+                      child: Text(
+                          tabs.settings.searchSource == 'duckduckgo'
+                              ? 'Результаты: DuckDuckGo'
+                              : 'Результаты: Brave Search',
                           style: TextStyle(
                               fontSize: 11.5, color: Color(0xFF5B646D))),
                     ),

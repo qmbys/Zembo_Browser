@@ -1,15 +1,19 @@
 import 'dart:async';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart' hide Text;
+import 'package:flutter/services.dart';
 import '../i18n/i18n.dart';
 import 'package:webview_windows/webview_windows.dart';
 import '../state/app_settings.dart';
 import '../state/downloads_controller.dart';
+import '../state/file_drop.dart';
 import '../state/filter_lists.dart';
 import '../state/filter_proxy.dart';
 import '../state/history_controller.dart';
 import '../state/keyboard_shortcuts.dart';
 import '../state/mail_controller.dart';
+import '../state/page_edits.dart';
 import '../state/single_instance.dart';
 import '../state/passwords_controller.dart';
 import '../state/suggest_service.dart';
@@ -25,6 +29,7 @@ import '../widgets/password_layer.dart';
 import '../widgets/permission_layer.dart';
 import '../widgets/panel_host.dart';
 import '../widgets/search_results_page.dart';
+import '../widgets/page_editor_panel.dart';
 import '../widgets/pip_overlay.dart';
 import '../widgets/web_page.dart';
 import 'settings_page.dart';
@@ -82,6 +87,10 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
     _tabs.passwords = _passwords;
     _passwords.init();
     _keys.attach();
+    _tabs.edits = _edits;
+    _tabs.onF12 = _toggleEditor;
+    HardwareKeyboard.instance.addHandler(_onKey);
+    _edits.load().then((_) => _tabs.reapplyAllScripts());
     // Ссылки из других программ (браузер по умолчанию).
     _urlSub = SingleInstance.urls.listen(_openExternal);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -93,6 +102,48 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
 
   StreamSubscription<String>? _urlSub;
 
+  // ---------- перенос файлов на окно ----------
+  final _pageKey = GlobalKey();
+
+  // ---------- редактор кода страницы (F12) ----------
+  final _edits = PageEdits();
+  bool _editorOpen = false;
+
+  void _toggleEditor() {
+    if (!mounted) return;
+    setState(() => _editorOpen = !_editorOpen);
+  }
+
+  bool _onKey(KeyEvent e) {
+    if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.f12) {
+      _toggleEditor();
+      return true;
+    }
+    return false;
+  }
+  bool _dragging = false;
+
+  Future<void> _onFilesDropped(DropDoneDetails d) async {
+    setState(() => _dragging = false);
+    final paths = [for (final f in d.files) f.path];
+    if (paths.isEmpty) return;
+
+    // Точка на странице в пикселях сайта: учитываем масштаб интерфейса и страницы.
+    var x = 200.0, y = 200.0;
+    final box = _pageKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null && box.hasSize) {
+      var local = box.globalToLocal(d.globalPosition);
+      if (!(Offset.zero & box.size).contains(local)) {
+        local = box.size.center(Offset.zero);
+      }
+      final z = _tabs.active.zoom;
+      final k = z > 0 ? z : 1.0;
+      x = local.dx / k;
+      y = local.dy / k;
+    }
+    await FileDrop.send(_tabs, paths, x: x, y: y);
+  }
+
   void _openExternal(String url) {
     // Пустую новую вкладку используем, иначе открываем новую.
     if (!_tabs.active.isHome) _tabs.addTab();
@@ -102,6 +153,8 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
   @override
   void dispose() {
     _urlSub?.cancel();
+    HardwareKeyboard.instance.removeHandler(_onKey);
+    _edits.dispose();
     _keys.detach();
     _tabs.dispose();
     _downloads.dispose();
@@ -119,7 +172,11 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: Stack(
+      body: DropTarget(
+        onDragEntered: (_) => setState(() => _dragging = true),
+        onDragExited: (_) => setState(() => _dragging = false),
+        onDragDone: _onFilesDropped,
+        child: Stack(
         children: [
           Column(
         children: [
@@ -139,7 +196,9 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
                   ),
           ),
           Expanded(
-            child: ListenableBuilder(
+            child: SizedBox.expand(
+              key: _pageKey,
+              child: ListenableBuilder(
               listenable: Listenable.merge([_tabs, widget.settings]),
               builder: (context, _) {
                 final tab = _tabs.active;
@@ -154,6 +213,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
                       _tabs.addTab();
                       _tabs.navigate(url);
                     },
+                    onOpenDevTools: _tabs.openDevTools,
                   );
                 }
                 if (tab.isSearch) {
@@ -176,6 +236,7 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
                   showShortcuts: widget.settings.showShortcuts,
                 );
               },
+            ),
             ),
           ),
         ],
@@ -245,7 +306,47 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
           ),
           // Запрос сайта на доступ: местоположение, микрофон, камера.
           Positioned.fill(child: PermissionLayer(tabs: _tabs)),
+          // Редактор кода страницы (F12).
+          if (_editorOpen)
+            Positioned(
+              top: 100,
+              right: 0,
+              bottom: 0,
+              width: 560,
+              child: ListenableBuilder(
+                listenable: _tabs,
+                builder: (context, _) => PageEditorPanel(
+                  key: ValueKey('editor-${_tabs.active.id}'),
+                  tabs: _tabs,
+                  edits: _edits,
+                  onClose: _toggleEditor,
+                ),
+              ),
+            ),
+          // Подсказка при перетаскивании файла на окно.
+          if (_dragging)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(
+                  margin: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0x33FF5A1F),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: AppColors.orange, width: 2),
+                  ),
+                  alignment: Alignment.center,
+                  child: const Text(
+                    'Отпустите файл, чтобы загрузить его на страницу',
+                    style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.foreground),
+                  ),
+                ),
+              ),
+            ),
         ],
+        ),
       ),
     );
   }

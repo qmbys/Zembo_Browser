@@ -58,8 +58,15 @@ foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
   if (Test-Path $src) { Copy-Item $src $stage -Force }
 }
 
-# 4. Installer.
-& $iscc (Join-Path $here 'zembo_browser.iss')
+# 4. Installer. Version comes from pubspec.yaml (1.0.1+2 -> 1.0.1), so it is set in one place only.
+$ver = '1.0.1'
+$pub = Join-Path $root 'pubspec.yaml'
+if (Test-Path $pub) {
+  $m = Select-String -Path $pub -Pattern '^version:\s*([0-9]+(\.[0-9]+)*)' | Select-Object -First 1
+  if ($m) { $ver = $m.Matches[0].Groups[1].Value }
+}
+Write-Host "Version: $ver"
+& $iscc "/DAppVersion=$ver" (Join-Path $here 'zembo_browser.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup returned an error' }
 
 Write-Host ''
