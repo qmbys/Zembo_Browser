@@ -46,11 +46,6 @@
 - `strings_en.dart`
 - `strings_uk.dart`
 
-## Как применить
-
-1. Скопируй папку `lib/` из этого архива поверх `lib/` десктопного проекта. Новый файл: `lib/state/ddg_search.dart`.
-2. Если ты менял эти файлы после того, как присылал мне проект, не заменяй их целиком: в `search_fallback.diff` лежат только мои изменения (например, `git apply search_fallback.diff` из корня проекта, либо перенеси вручную).
-
 ## Telegram
 
 Telegram channel with updates: https://t.me/Zembo_launcher
