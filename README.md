@@ -48,4 +48,4 @@
 
 ## Telegram
 
-Telegram channel with updates: https://t.me/Zembo_launcher
+Telegram channel with updates: https://t.me/Zembo_apps
