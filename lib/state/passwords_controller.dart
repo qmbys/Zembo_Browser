@@ -208,6 +208,21 @@ class PasswordsController extends ChangeNotifier {
     _save();
   }
 
+  /// Удаляет все сохранённые логины сайта.
+  void deleteForHost(String host) {
+    final k = hostKey(host);
+    _items.removeWhere((i) => hostKey(i.host) == k);
+    notifyListeners();
+    _save();
+  }
+
+  /// Забывает список сайтов, для которых запрещено сохранять пароли.
+  void clearNever() {
+    _never.clear();
+    notifyListeners();
+    _save();
+  }
+
   void addNever(String host) {
     final k = hostKey(host);
     if (k.isEmpty) return;

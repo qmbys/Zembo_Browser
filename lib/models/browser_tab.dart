@@ -9,6 +9,9 @@ class BrowserTab {
 
   final int id;
 
+  /// Скрытая страница, загруженная заранее (предзагрузка ярлыков).
+  bool preload = false;
+
   /// true — вкладка с настройками браузера.
   bool isSettings;
 

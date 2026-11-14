@@ -88,6 +88,23 @@ class SitePermissions extends ChangeNotifier {
     _save();
   }
 
+  /// Все сайты, для которых что-то сохранено.
+  List<String> get hosts => (_data.keys.toList()..sort());
+
+  /// Значение, заданное именно для этого сайта (без родительских доменов).
+  PermValue own(String host, PermKind kind) {
+    final v = _data[hostKey(host)]?[kind.name];
+    return v == null ? PermValue.ask : PermValue.values[v];
+  }
+
+  /// Забыть всё про все сайты.
+  void resetAll() {
+    if (_data.isEmpty) return;
+    _data.clear();
+    notifyListeners();
+    _save();
+  }
+
   bool hasAny(String host) => _data.containsKey(hostKey(host));
 
   void reset(String host) {

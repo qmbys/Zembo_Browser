@@ -14,20 +14,23 @@ class DefaultBrowser {
 
   static bool get supported => Platform.isWindows;
 
-  /// Выбран ли Zembo Browser для ссылок https.
+  /// Выбран ли Zembo Browser для ссылок. Windows хранит выбор по-разному в зависимости
+  /// от сборки (UserChoice, UserChoiceLatest и т.д.), поэтому читаем весь раздел
+  /// выбора для https и http и ищем в нём идентификатор Zembo Browser.
   static Future<bool> isDefault() async {
     if (!supported) return false;
-    try {
-      final r = await Process.run('reg', [
-        'query',
-        r'HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice',
-        '/v',
-        'ProgId',
-      ]);
-      return r.exitCode == 0 && r.stdout.toString().contains(urlProgId);
-    } catch (_) {
-      return false;
+    const base =
+        r'HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations';
+    for (final proto in ['https', 'http']) {
+      try {
+        final r = await Process.run('reg', ['query', '$base\\$proto', '/s']);
+        if (r.exitCode == 0 &&
+            r.stdout.toString().toLowerCase().contains('zembobrowser')) {
+          return true;
+        }
+      } catch (_) {}
     }
+    return false;
   }
 
   static Future<void> _set(String key, String value, [String? name]) async {
@@ -75,12 +78,24 @@ class DefaultBrowser {
         '$_appKey\\Capabilities', 'ZemboBrowser');
   }
 
-  /// Открывает «Приложения по умолчанию» в настройках Windows.
+  /// Открывает настройки Windows сразу на странице Zembo Browser — там одна кнопка
+  /// «Использовать по умолчанию». На Windows 10 откроется общий список приложений.
   static Future<void> openWindowsSettings() async {
     if (!supported) return;
-    try {
-      await Process.start('explorer.exe', ['ms-settings:defaultbrowser'],
-          mode: ProcessStartMode.detached);
-    } catch (_) {}
+    // explorer.exe принимает такой адрес за путь к папке (открывает «Документы»),
+    // поэтому отдаём его системе как ссылку.
+    Future<bool> run(String uri) async {
+      try {
+        await Process.start('rundll32', ['url.dll,FileProtocolHandler', uri],
+            mode: ProcessStartMode.detached);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    if (!await run('ms-settings:defaultapps?registeredAppUser=ZemboBrowser')) {
+      await run('ms-settings:defaultbrowser');
+    }
   }
 }

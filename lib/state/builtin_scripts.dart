@@ -139,7 +139,9 @@ class BuiltinScripts {
 
   document.addEventListener('DOMContentLoaded', check);
   window.addEventListener('load', check);
-  setInterval(check, 1500);
+  // Проверка не по таймеру каждые 1,5 с (это давало лишние перерасчёты стилей), а несколько раз после загрузки.
+  setTimeout(check, 500); setTimeout(check, 1800); setTimeout(check, 5000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) check(); });
 
   // Смена темы на самом сайте (класс или атрибут у <html>).
   var timer = null;

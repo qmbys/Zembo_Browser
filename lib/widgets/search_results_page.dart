@@ -242,7 +242,7 @@ class _SearchResultsPageState extends State<SearchResultsPage> {
                           tabs.settings.searchSource == 'duckduckgo'
                               ? 'Результаты: DuckDuckGo'
                               : 'Результаты: Brave Search',
-                          style: TextStyle(
+                          style: const TextStyle(
                               fontSize: 11.5, color: Color(0xFF5B646D))),
                     ),
                   ),

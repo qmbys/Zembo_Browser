@@ -55,9 +55,26 @@ class FilterProxy extends ChangeNotifier {
   bool _isBlocked(String host) {
     if (!settings.adBlock) return false;
     final h = host.toLowerCase();
+    // Домены, без которых сайты перестают работать (скрипты, капчи, вход), не блокируем.
+    if (_neverBlock(h)) return false;
     if (lists.blocks(h)) {
       _countBlocked();
       return true;
+    }
+    return false;
+  }
+
+  static const _safeHosts = <String>[
+    'chatgpt.com', 'openai.com', 'oaistatic.com', 'oaiusercontent.com',
+    'cloudflare.com', 'cloudflareinsights.com', 'jsdelivr.net', 'unpkg.com',
+    'cdnjs.com', 'gstatic.com', 'googleapis.com', 'recaptcha.net',
+    'hcaptcha.com', 'github.com', 'githubusercontent.com', 'githubassets.com',
+    'accounts.google.com', 'microsoftonline.com', 'live.com', 'apple.com',
+  ];
+
+  static bool _neverBlock(String h) {
+    for (final s in _safeHosts) {
+      if (h == s || h.endsWith('.$s')) return true;
     }
     return false;
   }
@@ -185,9 +202,18 @@ class FilterProxy extends ChangeNotifier {
     remote.setOption(SocketOption.tcpNoDelay, true);
     if (initial.isNotEmpty) remote.add(initial);
 
+    // Данные гоним с «тормозом»: если получатель не успевает, источник ставится на паузу.
+    // Раньше всё копилось в памяти, и тяжёлые сайты и видео подвешивали интерфейс.
+    var upPending = 0;
     sub.onData((d) {
       try {
         remote.add(d);
+        upPending += d.length;
+        if (upPending > 262144) {
+          upPending = 0;
+          sub.pause();
+          remote.flush().catchError((_) {}).whenComplete(sub.resume);
+        }
       } catch (_) {}
     });
     sub.onError((_) {
@@ -196,10 +222,18 @@ class FilterProxy extends ChangeNotifier {
     });
     sub.onDone(() => _closeAfterFlush(remote));
 
-    remote.listen(
+    var downPending = 0;
+    late final StreamSubscription<Uint8List> rsub;
+    rsub = remote.listen(
       (d) {
         try {
           client.add(d);
+          downPending += d.length;
+          if (downPending > 262144) {
+            downPending = 0;
+            rsub.pause();
+            client.flush().catchError((_) {}).whenComplete(rsub.resume);
+          }
         } catch (_) {}
       },
       onDone: () => _closeAfterFlush(client),

@@ -47,10 +47,12 @@ class MailScript {
     if (!isMailField(el) || el.value) return;
     window.__zmailEl = el;
     var r = el.getBoundingClientRect();
+    shownFlag = true;
     post({ type: 'zembo-mail-field', x: r.left, y: r.bottom, w: r.width });
   }
 
-  function hide() { post({ type: 'zembo-mail-hide' }); }
+  var shownFlag = false;
+  function hide() { if (!shownFlag) return; shownFlag = false; post({ type: 'zembo-mail-hide' }); }
 
   document.addEventListener('focusin', function (e) { show(e.target); }, true);
   document.addEventListener('click', function (e) {

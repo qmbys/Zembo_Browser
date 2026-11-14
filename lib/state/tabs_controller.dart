@@ -15,6 +15,10 @@ import 'brave_search.dart';
 import 'ddg_search.dart';
 import 'builtin_scripts.dart';
 import 'downloads_controller.dart';
+import 'app_links.dart';
+import 'external_links.dart';
+import 'site_data.dart';
+import 'focus_fix.dart';
 import 'history_controller.dart';
 import 'keyboard_shortcuts.dart';
 import 'mail_controller.dart';
@@ -217,6 +221,10 @@ class TabsController extends ChangeNotifier {
     scraper.dispose();
     settings.removeListener(_onSettingsChanged);
     for (final t in _tabs) {
+      _disposeWeb(t);
+    }
+    for (final t in _preloaded.values) {
+      t.closed = true;
       _disposeWeb(t);
     }
     super.dispose();
@@ -425,6 +433,8 @@ class TabsController extends ChangeNotifier {
   }
 
   void _openUrl(BrowserTab tab, String url) {
+    // Сайт уже загружен в фоне — просто показываем его.
+    if (_adoptPreloaded(tab, url)) return;
     // Если переходим со страницы результатов — запоминаем её для кнопки «назад».
     if (tab.search != null) {
       tab.prevSearch = tab.search;
@@ -660,6 +670,11 @@ class TabsController extends ChangeNotifier {
     await c.setPopupWindowPolicy(WebviewPopupWindowPolicy.sameWindow);
 
     tab.subs.add(c.url.listen((u) {
+      // Переход на схему приложения (tg:, discord: и т.п.) — спрашиваем, а не открываем сами.
+      if (ExternalLinks.canOffer(u)) {
+        offerExternal(tab.id, u);
+        return;
+      }
       if (tab.url != null) {
         tab.url = u;
         // У каждого сайта свой сохранённый масштаб.
@@ -680,7 +695,7 @@ class TabsController extends ChangeNotifier {
     }));
     tab.subs.add(c.title.listen((t) {
       tab.pageTitle = t;
-      if (tab.url != null) history.updateTitle(tab.url!, t);
+      if (tab.url != null && !tab.preload) history.updateTitle(tab.url!, t);
       notifyListeners();
     }));
     tab.subs.add(c.loadingState.listen((s) {
@@ -690,7 +705,9 @@ class TabsController extends ChangeNotifier {
         tab.hasVideo = false;
         tab.iconUrl = null;
       }
-      if (s == LoadingState.navigationCompleted && tab.url != null) {
+      if (s == LoadingState.navigationCompleted &&
+          tab.url != null &&
+          !tab.preload) {
         history.record(tab.url!, tab.pageTitle ?? '');
       }
       // Полная очистка cookie затрагивает все сайты, поэтому её не делаем,
@@ -711,6 +728,13 @@ class TabsController extends ChangeNotifier {
     tab.subs.add(c.webMessage.listen((msg) => _onWebMessage(tab, msg)));
 
     tab.webReady = true;
+    if (_pendingClearData) {
+      _pendingClearData = false;
+      try {
+        await c.clearCookies();
+        await c.clearCache();
+      } catch (_) {}
+    }
     await _applyScripts(tab, clearCookies: settings.rejectCookies);
     notifyListeners();
   }
@@ -987,6 +1011,241 @@ class TabsController extends ChangeNotifier {
     }
   }
 
+  // ---------- предзагрузка ярлыков ----------
+
+  final Map<String, BrowserTab> _preloaded = {};
+  int _preloadGen = 0;
+  bool _preloadFirst = true;
+  String _preSig = '';
+  List<String> _preUrls = const [];
+  int _preLevel = 0;
+
+  /// Скрытые страницы, которые уже готовы (их рисуют за краем экрана).
+  List<BrowserTab> get preloadedTabs =>
+      _preloaded.values.where((t) => t.webReady && t.web != null).toList();
+
+  static String _preKey(String url) {
+    final u = Uri.tryParse(url);
+    if (u == null || u.host.isEmpty) return url;
+    final host = u.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '');
+    var path = u.path;
+    if (path.length > 1 && path.endsWith('/')) {
+      path = path.substring(0, path.length - 1);
+    }
+    if (path == '/') path = '';
+    return '$host$path${u.hasQuery ? '?${u.query}' : ''}';
+  }
+
+  /// Скрытая страница не должна воспроизводить звук, пока пользователь её не открыл.
+  static const _preloadGuard = r"""
+(function () {
+  window.__zpre = true;
+  function guard(e) { if (window.__zpre) { try { e.target.pause(); } catch (x) {} } }
+  document.addEventListener('play', guard, true);
+  document.addEventListener('playing', guard, true);
+})();
+""";
+
+  /// Загружает ярлыки главной страницы в фоне: 1 — первые 3, 2 — все.
+  Future<void> syncPreload(List<String> urls, int level, bool enabled,
+      {bool force = false}) async {
+    final lvl = enabled ? level : 0;
+    final sig = '$lvl|${urls.join(',')}';
+    if (!force && sig == _preSig) return;
+    _preSig = sig;
+    _preUrls = urls;
+    _preLevel = lvl;
+    final gen = ++_preloadGen;
+
+    final limit = lvl == 2 ? urls.length : (lvl == 1 ? 3 : 0);
+    final wanted = <String, String>{};
+    for (final raw in urls) {
+      if (wanted.length >= limit) break;
+      final url = _resolve(raw.trim());
+      if (!url.startsWith('http://') && !url.startsWith('https://')) continue;
+      wanted.putIfAbsent(_preKey(url), () => url);
+    }
+    for (final k in _preloaded.keys.toList()) {
+      if (!wanted.containsKey(k)) {
+        final t = _preloaded.remove(k)!;
+        t.closed = true;
+        _disposeWeb(t);
+      }
+    }
+    notifyListeners();
+    if (wanted.isEmpty) return;
+
+    if (_preloadFirst) {
+      _preloadFirst = false;
+      // Не мешаем запуску браузера.
+      await Future<void>.delayed(const Duration(seconds: 4));
+    }
+    for (final e in wanted.entries) {
+      if (gen != _preloadGen || _disposed) return;
+      if (_preloaded.containsKey(e.key)) continue;
+      // Сайты грузим по одному, чтобы не перегружать процессор и сеть.
+      await Future<void>.delayed(const Duration(milliseconds: 1200));
+      if (gen != _preloadGen || _disposed) return;
+      final t = BrowserTab(id: _nextId++)
+        ..preload = true
+        ..url = e.value
+        ..loading = true;
+      _preloaded[e.key] = t;
+      try {
+        t.webInit = _initWeb(t);
+        await t.webInit;
+        if (t.closed || t.web == null) {
+          _preloaded.remove(e.key);
+          continue;
+        }
+        final id = await t.web!.addScriptToExecuteOnDocumentCreated(_preloadGuard);
+        if (id != null) t.scriptIds.add(id);
+        await t.web!.loadUrl(e.value);
+        notifyListeners();
+      } catch (_) {
+        _preloaded.remove(e.key);
+        t.closed = true;
+        _disposeWeb(t);
+      }
+    }
+  }
+
+  /// Подменяет пустую вкладку уже загруженной страницей ярлыка.
+  bool _adoptPreloaded(BrowserTab tab, String url) {
+    if (tab.web != null ||
+        tab.webInit != null ||
+        tab.search != null ||
+        tab.isSettings ||
+        tab.url != null) {
+      return false;
+    }
+    final key = _preKey(url);
+    final pre = _preloaded[key];
+    final i = _tabs.indexOf(tab);
+    if (pre == null || i == -1 || !pre.webReady || pre.web == null || pre.closed) {
+      return false;
+    }
+    _preloaded.remove(key);
+    pre.preload = false;
+    pre.web!.executeScript('window.__zpre = false;').catchError((_) {});
+    _tabs[i] = pre;
+    tab.closed = true;
+    _activeId = pre.id;
+    ctx = null;
+    if (pre.url != null && !pre.loading) {
+      history.record(pre.url!, pre.pageTitle ?? '');
+    }
+    notifyListeners();
+    // Пополняем запас: этот сайт загрузится заново про запас.
+    Timer(const Duration(seconds: 3), () {
+      if (!_disposed) {
+        syncPreload(_preUrls, _preLevel, _preLevel > 0, force: true);
+      }
+    });
+    return true;
+  }
+
+  // ---------- данные сайтов ----------
+
+  bool _pendingClearData = false;
+
+  /// Удаляет cookie и кэш всех сайтов (выход из аккаунтов). Если сейчас нет ни одной
+  /// открытой страницы, очистка выполнится при открытии первой.
+  Future<void> clearAllSiteData() async {
+    for (final t in _tabs) {
+      final c = t.web;
+      if (t.webReady && c != null) {
+        try {
+          await c.clearCookies();
+          await c.clearCache();
+          break;
+        } catch (_) {}
+      }
+    }
+    _pendingClearData = true;
+    // Хранилища сайтов (localStorage, IndexedDB…) плагин сам не чистит: удаляем папку
+    // данных WebView при следующем запуске, и сайты открываются как в первый раз.
+    await SiteData.scheduleFullWipe();
+  }
+
+  /// Стирает данные одного сайта: открывает его на скрытой странице и очищает
+  /// всё, что он хранит (localStorage, IndexedDB, кэш, service worker, cookie).
+  Future<bool> wipeSiteStorage(String host) async {
+    WebviewController? c;
+    StreamSubscription<LoadingState>? sub;
+    try {
+      c = WebviewController();
+      await c.initialize().timeout(const Duration(seconds: 15));
+      final loaded = Completer<void>();
+      sub = c.loadingState.listen((s) {
+        if (s == LoadingState.navigationCompleted && !loaded.isCompleted) {
+          loaded.complete();
+        }
+      });
+      await c.loadUrl('https://$host/');
+      await loaded.future.timeout(const Duration(seconds: 25));
+      await c.executeScript(SiteData.wipeScript);
+      // Удаление баз и кэша идёт асинхронно: даём время закончить.
+      await Future<void>.delayed(const Duration(milliseconds: 1800));
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      await sub?.cancel();
+      try {
+        await c?.dispose();
+      } catch (_) {}
+    }
+  }
+
+  // ---------- переход в приложение ----------
+
+  /// Ссылка на приложение, которую открыл сайт (ждёт решения пользователя).
+  String? externalUrl;
+  int? externalTabId;
+
+  void offerExternal(int tabId, String url) {
+    if (!ExternalLinks.canOffer(url)) {
+      showToast('Сайт пытается открыть приложение — это заблокировано');
+      return;
+    }
+    externalUrl = url;
+    externalTabId = tabId;
+    notifyListeners();
+  }
+
+  Future<void> openExternal([String? url]) async {
+    final link = url ?? externalUrl;
+    externalUrl = null;
+    externalTabId = null;
+    notifyListeners();
+    if (link == null) return;
+    final ok = await ExternalLinks.open(link);
+    if (!ok) showToast('Не удалось открыть приложение');
+  }
+
+  void dismissExternal() {
+    externalUrl = null;
+    externalTabId = null;
+    notifyListeners();
+  }
+
+  /// Кнопка «Открыть в приложении» для текущего сайта (t.me, discord.gg и т.п.).
+  AppLink? get activeAppLink {
+    final t = active;
+    final l = t.isBrowsing ? AppLinks.forUrl(t.url) : null;
+    if (l == null || _dismissedApps.contains(l.app)) return null;
+    return l;
+  }
+
+  final Set<String> _dismissedApps = {};
+
+  /// Крестик на кнопке: до перезапуска браузера не предлагаем это приложение.
+  void dismissAppLink(String app) {
+    _dismissedApps.add(app);
+    notifyListeners();
+  }
+
   void showToast(String text) {
     toast = text;
     notifyListeners();
@@ -1088,6 +1347,8 @@ class TabsController extends ChangeNotifier {
       await add(PageMenuScript.support);
       await add(KeyScript.support);
       await add(MailScript.support);
+      await add(ExternalLinks.script);
+      await add(FocusFix.script);
       await add(BuiltinScripts.zemboSearchSkin);
       await add(ScrollScript.support(settings.smoothScroll, settings.scrollSpeed));
       if (settings.doNotTrack) await add(PrivacyScript.signals);
@@ -1195,6 +1456,9 @@ class TabsController extends ChangeNotifier {
             tab.hasVideo = has;
             notifyListeners();
           }
+        case 'zembo-ext':
+          final link = m['url'];
+          if (link is String) offerExternal(tab.id, link);
         case 'zembo-f12':
           if (tab.id != _activeId) return;
           onF12?.call();

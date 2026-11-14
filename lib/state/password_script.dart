@@ -119,13 +119,15 @@ class PasswordScript {
     if (el.value) return;
     window.__zpwEl = el;
     var r = el.getBoundingClientRect();
+    shownFlag = true;
     post({
       type: 'zembo-pw-field',
       x: r.left, y: r.bottom, w: r.width,
       hasPw: isPw || pwIn(el.form || document).length > 0
     });
   }
-  function hide() { post({ type: 'zembo-pw-hide' }); }
+  var shownFlag = false;
+  function hide() { if (!shownFlag) return; shownFlag = false; post({ type: 'zembo-pw-hide' }); }
 
   document.addEventListener('focusin', function (e) { show(e.target); }, true);
   document.addEventListener('click', function (e) {

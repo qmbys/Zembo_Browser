@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart' hide Text;
 import '../i18n/i18n.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +9,8 @@ import '../state/default_browser.dart';
 import '../state/history_controller.dart';
 import '../state/languages.dart';
 import '../state/passwords_controller.dart';
+import '../state/shortcuts_controller.dart';
+import '../state/site_permissions.dart';
 import '../widgets/flag_icon.dart';
 import '../theme/app_theme.dart';
 
@@ -20,6 +23,7 @@ enum _Tab {
   languages,
   history,
   downloads,
+  performance,
   network,
   about
 }
@@ -29,6 +33,10 @@ class SettingsPage extends StatefulWidget {
   final HistoryController history;
   final PasswordsController passwords;
   final DownloadsController downloads;
+  final SitePermissions sitePerms;
+  final ShortcutsController shortcuts;
+  final Future<void> Function() onClearSiteData;
+  final Future<bool> Function(String host) onWipeSite;
   final ValueChanged<String> onOpenUrl;
   final VoidCallback? onOpenDevTools;
   const SettingsPage({
@@ -37,6 +45,10 @@ class SettingsPage extends StatefulWidget {
     required this.history,
     required this.passwords,
     required this.downloads,
+    required this.sitePerms,
+    required this.shortcuts,
+    required this.onClearSiteData,
+    required this.onWipeSite,
     required this.onOpenUrl,
     this.onOpenDevTools,
   });
@@ -93,6 +105,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _Tab.languages: (Icons.translate, 'Языки'),
     _Tab.history: (Icons.history, 'История'),
     _Tab.downloads: (Icons.download_outlined, 'Загрузки'),
+    _Tab.performance: (Icons.speed, 'Производительность'),
     _Tab.network: (Icons.language, 'Сеть'),
     _Tab.about: (Icons.info_outline, 'О браузере'),
   };
@@ -243,7 +256,8 @@ class _SettingsPageState extends State<SettingsPage> {
           ],
         );
       case _Tab.privacy:
-        return _Section(title: 'Конфиденциальность', children: [
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _Section(title: 'Конфиденциальность', children: [
           _Row(
             title: 'Уровень защиты',
             subtitle: 'Отключена, стандартная или строгая (то же, что значок щита)',
@@ -281,6 +295,8 @@ class _SettingsPageState extends State<SettingsPage> {
               onChanged: (v) => s.doNotTrack = v,
             ),
           ),
+        ]),
+          _siteDataSection(s),
         ]);
       case _Tab.passwords:
         return _passwordsContent(s);
@@ -290,6 +306,28 @@ class _SettingsPageState extends State<SettingsPage> {
         return _historyContent();
       case _Tab.downloads:
         return _downloadsContent();
+      case _Tab.performance:
+        return _Section(title: 'Производительность', children: [
+          _Row(
+            title: 'Предзагрузка ярлыков',
+            subtitle:
+                'Сайты с главной страницы загружаются заранее, в фоне, и открываются быстрее',
+            trailing: _Dropdown<int>(
+              value: s.preloadLevel,
+              items: const {0: 'Отключена', 1: 'Средняя', 2: 'Максимальная'},
+              onChanged: (v) => _setPreload(s, v),
+            ),
+          ),
+          const _Divider(),
+          const _Row(
+            title: 'Что выбрать',
+            subtitle:
+                'Отключена: как обычно, лишняя оперативная память не используется. '
+                'Средняя: заранее загружаются первые 3 ярлыка, они открываются чуть быстрее. '
+                'Максимальная: загружаются все ярлыки, сайты открываются моментально, '
+                'но браузер занимает много оперативной памяти.',
+          ),
+        ]);
       case _Tab.network:
         return _Section(title: 'Сеть', children: [
           _Row(
@@ -305,7 +343,7 @@ class _SettingsPageState extends State<SettingsPage> {
         ]);
       case _Tab.about:
         return _Section(title: 'О браузере', children: [
-          const _Row(title: 'Zembo Browser', subtitle: 'Версия 1.0.1'),
+          const _Row(title: 'Zembo Browser', subtitle: 'Версия 1.0.2'),
           const _Divider(),
           _Row(
             title: 'Разработчик',
@@ -341,6 +379,273 @@ class _SettingsPageState extends State<SettingsPage> {
   // ---------- пароли ----------
 
   bool _confirmClear = false;
+
+  // ---------- сохранённые данные о работе с сайтами ----------
+
+  static const _permLabels = {
+    PermKind.cookies: 'Файлы cookie',
+    PermKind.location: 'Местоположение',
+    PermKind.microphone: 'Микрофон',
+    PermKind.camera: 'Камера',
+    PermKind.notifications: 'Уведомления',
+    PermKind.clipboard: 'Буфер обмена',
+    PermKind.sensors: 'Датчики',
+  };
+
+  List<String> _siteHosts(AppSettings s) {
+    final set = <String>{
+      ...widget.sitePerms.hosts,
+      for (final h in s.siteZoomHosts) SitePermissions.hostKey(h),
+      for (final h in s.adAllowHosts) SitePermissions.hostKey(h),
+      for (final l in widget.passwords.items) SitePermissions.hostKey(l.host),
+    }..remove('');
+    return set.toList()..sort();
+  }
+
+  String _siteSummary(AppSettings s, String host) {
+    final perms = widget.sitePerms;
+    final parts = <String>[];
+    final allowed = [
+      for (final k in PermKind.values)
+        if (perms.own(host, k) == PermValue.allow) _permLabels[k]!,
+    ];
+    final blocked = [
+      for (final k in PermKind.values)
+        if (perms.own(host, k) == PermValue.block) _permLabels[k]!,
+    ];
+    if (allowed.isNotEmpty) parts.add('Разрешено: ${allowed.join(', ')}');
+    if (blocked.isNotEmpty) parts.add('Запрещено: ${blocked.join(', ')}');
+    final logins = widget.passwords.items
+        .where((l) => SitePermissions.hostKey(l.host) == host)
+        .length;
+    if (logins > 0) parts.add('Логины: $logins');
+    final z = s.zoomForHost(host);
+    if ((z - 1.0).abs() > 0.001) parts.add('Масштаб ${(z * 100).round()}%');
+    if (s.adAllowHosts.any((h) => SitePermissions.hostKey(h) == host)) {
+      parts.add('Реклама разрешена');
+    }
+    return parts.isEmpty ? 'Нет сохранённых данных' : parts.join(' · ');
+  }
+
+  String _permValueLabel(PermKind k, PermValue v) {
+    switch (v) {
+      case PermValue.allow:
+        return 'Разрешено';
+      case PermValue.block:
+        return 'Запрещено';
+      case PermValue.ask:
+        return k == PermKind.cookies ? 'По умолчанию' : 'Спрашивать';
+    }
+  }
+
+  Future<void> _setPreload(AppSettings s, int v) async {
+    if (v == 2) {
+      final n = widget.shortcuts.items.length;
+      if (n > 10) {
+        final r = await _choose(
+          'Максимальная предзагрузка',
+          'На главной странице $n ярлыков. При максимальной предзагрузке все они '
+              'будут постоянно загружены в фоне, и браузер займёт очень много '
+              'оперативной памяти (до нескольких гигабайт). Включить?',
+          'Всё равно включить',
+        );
+        if (r != 1) return;
+      }
+    }
+    s.preloadLevel = v;
+  }
+
+  /// Окно с вопросом: 0 — отмена, 1 — основное действие, 2 — дополнительное.
+  Future<int> _choose(String title, String body, String action,
+      {String? secondary}) async {
+    final r = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF111418),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppColors.border),
+        ),
+        title: Text(title,
+            style: const TextStyle(fontSize: 18, color: AppColors.foreground)),
+        content: SizedBox(
+          width: 440,
+          child: Text(body,
+              style: const TextStyle(fontSize: 14, color: AppColors.muted)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 0),
+            child: const Text('Отмена'),
+          ),
+          if (secondary != null)
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, 2),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.orange,
+                side: const BorderSide(color: AppColors.orange),
+              ),
+              child: Text(secondary),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 1),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.orange,
+              foregroundColor: Colors.white,
+            ),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    return r ?? 0;
+  }
+
+  /// Показывает крутилку, пока выполняется долгая операция.
+  Future<T> _busy<T>(Future<T> Function() job) async {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+          child: CircularProgressIndicator(color: AppColors.orange)),
+    );
+    try {
+      return await job();
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  Future<void> _resetSite(AppSettings s, String host) async {
+    final r = await _choose(
+      'Сбросить всё о работе с сайтом?',
+      '$host: будут удалены разрешения, сохранённые логины и пароли, масштаб, '
+          'исключения для рекламы и всё, что сайт хранит в браузере (локальное '
+          'хранилище, базы данных, кэш, service worker, доступные cookie).\n\n'
+          'Закрытые cookie входа браузер по одному сайту удалить не может. Чтобы '
+          'сайт открылся как в первый раз, выберите «Сбросить полностью»: тогда '
+          'вы выйдете из аккаунтов на всех сайтах.',
+      'Сбросить',
+      secondary: 'Сбросить полностью',
+    );
+    if (r == 0) return;
+    widget.sitePerms.reset(host);
+    s.resetSite(host);
+    widget.passwords.deleteForHost(host);
+    await _busy(() async {
+      await widget.onWipeSite(host);
+      if (r == 2) await widget.onClearSiteData();
+    });
+  }
+
+  Future<void> _resetAllSites(AppSettings s) async {
+    final r = await _choose(
+      'Сбросить всё о работе с сайтами?',
+      'Все сохранённые логины и пароли, файлы cookie и кэш, разрешения сайтов, '
+          'масштаб страниц, исключения для рекламы и данные, которые сайты хранят '
+          'в браузере, будут удалены. Вы выйдете из аккаунтов на всех сайтах. '
+          'Полная очистка завершится при следующем запуске браузера. Это действие '
+          'нельзя отменить.',
+      'Сбросить всё',
+    );
+    if (r == 0) return;
+    widget.sitePerms.resetAll();
+    s.resetAllSites();
+    widget.passwords.deleteAll();
+    widget.passwords.clearNever();
+    await _busy(() => widget.onClearSiteData());
+  }
+
+  Widget _siteRow(AppSettings s, String host) {
+    return _Row(
+      title: host,
+      subtitle: _siteSummary(s, host),
+      trailing: PopupMenuButton<String>(
+        tooltip: 'Разрешения сайта',
+        color: const Color(0xFF171A1E),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: AppColors.border),
+        ),
+        icon: const Icon(Icons.tune, color: AppColors.muted, size: 20),
+        onSelected: (v) {
+          if (v == 'reset') {
+            _resetSite(s, host);
+            return;
+          }
+          // Нажатие переключает: спрашивать → разрешено → запрещено.
+          final kind = PermKind.values.firstWhere((k) => 'p:${k.name}' == v);
+          final cur = widget.sitePerms.own(host, kind);
+          final next = PermValue.values[(cur.index + 1) % 3];
+          widget.sitePerms.set(host, kind, next);
+        },
+        itemBuilder: (_) => [
+          for (final k in PermKind.values)
+            PopupMenuItem<String>(
+              value: 'p:${k.name}',
+              child: SizedBox(
+                width: 270,
+                child: Row(children: [
+                  Expanded(
+                    child: Text(_permLabels[k]!,
+                        style: const TextStyle(
+                            fontSize: 14, color: AppColors.foreground)),
+                  ),
+                  Text(_permValueLabel(k, widget.sitePerms.own(host, k)),
+                      style: const TextStyle(
+                          fontSize: 13, color: AppColors.muted)),
+                ]),
+              ),
+            ),
+          const PopupMenuDivider(),
+          const PopupMenuItem<String>(
+            value: 'reset',
+            child: Text('Сбросить всё о работе с сайтом',
+                style: TextStyle(fontSize: 14, color: AppColors.orange)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _siteDataSection(AppSettings s) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([widget.sitePerms, s, widget.passwords]),
+      builder: (context, _) {
+        final hosts = _siteHosts(s);
+        return _Section(title: 'Сохранённые данные о работе с сайтами', children: [
+          if (hosts.isEmpty)
+            const _Row(
+              title: 'Пока ничего нет',
+              subtitle:
+                  'Здесь появятся сайты, для которых вы выдали разрешения, сохранили логины или изменили настройки',
+            ),
+          for (var i = 0; i < hosts.length; i++) ...[
+            if (i > 0) const _Divider(),
+            _siteRow(s, hosts[i]),
+          ],
+          const _Divider(),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: () => _resetAllSites(s),
+                icon: const Icon(Icons.delete_outline, size: 18),
+                label: const Text('Сбросить всё о работе с сайтами'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.orange,
+                  side: const BorderSide(color: AppColors.orange),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ),
+          ),
+        ]);
+      },
+    );
+  }
 
   Widget _passwordsContent(AppSettings s) {
     return ListenableBuilder(
@@ -542,7 +847,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           fontSize: 14, color: AppColors.foreground),
                       decoration: InputDecoration(
                         hintText: tr('Ключ Brave Search API'),
-                        hintStyle: TextStyle(fontSize: 14, color: AppColors.muted),
+                        hintStyle: const TextStyle(fontSize: 14, color: AppColors.muted),
                         border: InputBorder.none,
                         isCollapsed: true,
                       ),
@@ -611,7 +916,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           fontSize: 14, color: AppColors.foreground),
                       decoration: InputDecoration(
                         hintText: tr('Ключ Safe Browsing API'),
-                        hintStyle: TextStyle(fontSize: 14, color: AppColors.muted),
+                        hintStyle: const TextStyle(fontSize: 14, color: AppColors.muted),
                         border: InputBorder.none,
                         isCollapsed: true,
                       ),
@@ -887,7 +1192,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             decoration: InputDecoration(
                               hintText: tr('Поиск по истории'),
                               hintStyle:
-                                  TextStyle(fontSize: 14, color: AppColors.muted),
+                                  const TextStyle(fontSize: 14, color: AppColors.muted),
                               border: InputBorder.none,
                               isCollapsed: true,
                             ),
@@ -1383,6 +1688,7 @@ class _DefaultBrowserRowState extends State<_DefaultBrowserRow>
     with WidgetsBindingObserver {
   bool? _isDefault;
   bool _busy = false;
+  Timer? _poll;
 
   @override
   void initState() {
@@ -1393,6 +1699,7 @@ class _DefaultBrowserRowState extends State<_DefaultBrowserRow>
 
   @override
   void dispose() {
+    _poll?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -1406,6 +1713,7 @@ class _DefaultBrowserRowState extends State<_DefaultBrowserRow>
   Future<void> _refresh() async {
     final v = await DefaultBrowser.isDefault();
     if (mounted) setState(() => _isDefault = v);
+    if (v) _poll?.cancel();
   }
 
   Future<void> _makeDefault() async {
@@ -1413,6 +1721,16 @@ class _DefaultBrowserRowState extends State<_DefaultBrowserRow>
     await DefaultBrowser.register();
     await DefaultBrowser.openWindowsSettings();
     if (mounted) setState(() => _busy = false);
+    // Пока пользователь в настройках Windows, раз в 2 секунды проверяем выбор.
+    _poll?.cancel();
+    var n = 0;
+    _poll = Timer.periodic(const Duration(seconds: 2), (timer) {
+      if (!mounted || ++n > 150) {
+        timer.cancel();
+        return;
+      }
+      _refresh();
+    });
   }
 
   @override

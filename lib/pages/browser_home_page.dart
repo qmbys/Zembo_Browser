@@ -17,6 +17,7 @@ import '../state/page_edits.dart';
 import '../state/single_instance.dart';
 import '../state/passwords_controller.dart';
 import '../state/suggest_service.dart';
+import '../state/updater.dart';
 import '../state/panels_controller.dart';
 import '../state/shortcuts_controller.dart';
 import '../state/tabs_controller.dart';
@@ -31,6 +32,8 @@ import '../widgets/panel_host.dart';
 import '../widgets/search_results_page.dart';
 import '../widgets/page_editor_panel.dart';
 import '../widgets/pip_overlay.dart';
+import '../widgets/external_app_bar.dart';
+import '../widgets/update_dialog.dart';
 import '../widgets/web_page.dart';
 import 'settings_page.dart';
 
@@ -57,6 +60,7 @@ class BrowserHomePage extends StatefulWidget {
 
 class _BrowserHomePageState extends State<BrowserHomePage> {
   final _downloads = DownloadsController();
+  final _update = UpdateController();
   final _panels = PanelsController();
   late final MailController _mail = MailController(widget.settings);
   late final PasswordsController _passwords = PasswordsController(widget.settings);
@@ -82,6 +86,10 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
       _tabs.navigate(url);
     };
     _downloads.init();
+    _update.checkOnStart();
+    _shortcuts.addListener(_syncPreload);
+    widget.settings.addListener(_syncPreload);
+    _syncPreload();
     _tabs.mail = _mail;
     _mail.init();
     _tabs.passwords = _passwords;
@@ -150,9 +158,21 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
     _tabs.navigate(url);
   }
 
+  /// Предзагрузка сайтов с главной страницы (по настройке «Производительность»).
+  void _syncPreload() {
+    _tabs.syncPreload(
+      [for (final s in _shortcuts.items) s.url],
+      widget.settings.preloadLevel,
+      widget.settings.showShortcuts,
+    );
+  }
+
   @override
   void dispose() {
     _urlSub?.cancel();
+    _shortcuts.removeListener(_syncPreload);
+    widget.settings.removeListener(_syncPreload);
+    _update.dispose();
     HardwareKeyboard.instance.removeHandler(_onKey);
     _edits.dispose();
     _keys.detach();
@@ -209,6 +229,10 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
                     history: _history,
                     passwords: _passwords,
                     downloads: _downloads,
+                    sitePerms: _tabs.sitePerms,
+                    shortcuts: _shortcuts,
+                    onClearSiteData: _tabs.clearAllSiteData,
+                    onWipeSite: _tabs.wipeSiteStorage,
                     onOpenUrl: (url) {
                       _tabs.addTab();
                       _tabs.navigate(url);
@@ -240,6 +264,27 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
             ),
           ),
         ],
+          ),
+          // Сайты, загруженные заранее (предзагрузка ярлыков), — тоже за краем экрана.
+          Positioned(
+            left: -4000,
+            top: 0,
+            width: 1280,
+            height: 800,
+            child: ListenableBuilder(
+              listenable: _tabs,
+              builder: (context, _) => Stack(
+                children: [
+                  for (final p in _tabs.preloadedTabs)
+                    Positioned.fill(
+                      child: KeyedSubtree(
+                        key: ValueKey('pre-${p.id}'),
+                        child: Webview(p.web!),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
           // Скрытая страница для получения результатов поиска (за краем экрана).
           Positioned(
@@ -345,6 +390,9 @@ class _BrowserHomePageState extends State<BrowserHomePage> {
                 ),
               ),
             ),
+          Positioned.fill(child: ExternalAppBar(tabs: _tabs)),
+          // Окно автообновления поверх всего.
+          Positioned.fill(child: UpdateDialog(controller: _update)),
         ],
         ),
       ),

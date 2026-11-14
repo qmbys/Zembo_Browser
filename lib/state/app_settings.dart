@@ -58,6 +58,9 @@ class AppSettings extends ChangeNotifier {
   bool _showShortcuts = true;
   bool _doNotTrack = true;
   String _dns = 'cloudflare';
+
+  /// Предзагрузка ярлыков главной страницы: 0 — выкл., 1 — средняя, 2 — максимальная.
+  int _preloadLevel = 0;
   bool _rejectCookies = false;
   bool _darkSites = false;
   bool _googleDark = true;
@@ -103,6 +106,7 @@ class AppSettings extends ChangeNotifier {
   int get protectionLevel => !_adBlock ? 0 : (isListEnabled('hagezi-pro') ? 2 : 1);
   bool get doNotTrack => _doNotTrack;
   String get dns => _dns;
+  int get preloadLevel => _preloadLevel;
   bool get rejectCookies => _rejectCookies;
   bool get darkSites => _darkSites;
 
@@ -298,10 +302,29 @@ class AppSettings extends ChangeNotifier {
       _update(() => _scrollSpeed = v.clamp(0.25, 4.0).toDouble());
   set doNotTrack(bool v) => _update(() => _doNotTrack = v);
   set dns(String v) => _update(() => _dns = v);
+  set preloadLevel(int v) => _update(() => _preloadLevel = v.clamp(0, 2));
   set rejectCookies(bool v) => _update(() => _rejectCookies = v);
   set darkSites(bool v) => _update(() => _darkSites = v);
   set uiScale(double v) => _update(() => _uiScale = v.clamp(0.6, 1.25).toDouble());
   set adBlock(bool v) => _update(() => _adBlock = v);
+
+  /// Сайты, для которых сохранён свой масштаб.
+  List<String> get siteZoomHosts => _siteZoom.keys.toList();
+
+  /// Сбрасывает масштаб и исключение из блокировщика рекламы для одного сайта.
+  void resetSite(String host) {
+    final k = _zoomKey(host);
+    _update(() {
+      _siteZoom.remove(k);
+      _adAllowHosts.removeWhere((h) => _zoomKey(h) == k);
+    });
+  }
+
+  /// Сбрасывает масштаб и исключения рекламы для всех сайтов.
+  void resetAllSites() => _update(() {
+        _siteZoom.clear();
+        _adAllowHosts.clear();
+      });
 
   void setAdAllowed(String host, bool allowed) {
     if (host.isEmpty) return;
@@ -329,6 +352,7 @@ class AppSettings extends ChangeNotifier {
     final parts = <String>[];
     final siteLang = siteLanguage;
     if (siteLang != null) parts.add('--lang=$siteLang');
+    // Флаги ускорения (--enable-gpu-rasterization и т.п.) убраны: они мешали запуску WebView2.
     if (proxyPort != null) {
       parts.add('--proxy-server=127.0.0.1:$proxyPort');
       return parts.join(' ');
@@ -377,6 +401,8 @@ class AppSettings extends ChangeNotifier {
             searchUrls.containsKey(engine)) {
           s._searchEngine = engine;
         }
+        final pl = map['preloadLevel'];
+        if (pl is int && pl >= 0 && pl <= 2) s._preloadLevel = pl;
         final dns = map['dns'];
         if (dns is String && dnsLabels.containsKey(dns)) s._dns = dns;
         s._showShortcuts = map['showShortcuts'] as bool? ?? s._showShortcuts;
@@ -453,6 +479,7 @@ class AppSettings extends ChangeNotifier {
         'searchEngine': _searchEngine,
         'zemboSearchDefault': true,
         'dns': _dns,
+        'preloadLevel': _preloadLevel,
         'showShortcuts': _showShortcuts,
         'smoothScroll': _smoothScroll,
         'braveApiKey': _braveApiKey,

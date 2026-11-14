@@ -12,6 +12,7 @@ import 'state/filter_lists.dart';
 import 'state/filter_proxy.dart';
 import 'state/history_controller.dart';
 import 'state/shortcuts_controller.dart';
+import 'state/site_data.dart';
 import 'state/single_instance.dart';
 import 'ui_scale.dart';
 
@@ -42,6 +43,8 @@ Future<void> main(List<String> args) async {
   filterLists.init();
 
   if (Platform.isWindows) {
+    // Отложенный полный сброс данных сайтов (из настроек конфиденциальности).
+    await SiteData.applyPendingWipe(settings.webviewDataPath);
     // Прокси и папка данных WebView задаются до создания первой страницы.
     try {
       await WebviewController.initializeEnvironment(

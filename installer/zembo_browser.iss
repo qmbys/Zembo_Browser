@@ -4,7 +4,7 @@
 #define AppName "Zembo Browser"
 ; Версию подставляет build_installer.ps1 из pubspec.yaml (/DAppVersion=...).
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.0.2"
 #endif
 #define AppExe "zembo_browser.exe"
 #define AppPublisher "Zembo"
@@ -102,9 +102,16 @@ Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueNa
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; Тихое обновление из браузера (/UPDATE=1): после установки сразу запускаем браузер.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: IsUpdateRun
 Filename: "ms-settings:defaultbrowser"; Description: "{cm:SetDefault}"; Flags: shellexec postinstall skipifsilent unchecked
 
 [Code]
+function IsUpdateRun: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
 const
   WebView2Guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
 

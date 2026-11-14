@@ -301,7 +301,7 @@ class AdBlock {
   var hideTimer = null;
   function scheduleHide() {
     clearTimeout(hideTimer);
-    hideTimer = setTimeout(hideAdLinks, 400);
+    hideTimer = setTimeout(hideAdLinks, 1200);
   }
   document.addEventListener('DOMContentLoaded', hideAdLinks);
   window.addEventListener('load', hideAdLinks);
@@ -435,7 +435,7 @@ class AdBlock {
           if (v.__zFast) { try { v.playbackRate = 1; } catch (e) {} v.__zFast = false; }
         }
       }
-    }, 250);
+    }, 500);
   }
 
   // ---------- реклама в видео на YouTube ----------
